@@ -1,13 +1,14 @@
 from agents.contacts_agent import ContactsAgent
 from agents.docs_agent import DocsAgent
 from agents.gmail_agent import GmailAgent
-
+from agents.drive_agent import DriveAgent
 
 class Orchestrator:
     def __init__(self):
         self.contacts_agent = ContactsAgent()
         self.docs_agent = DocsAgent()
         self.gmail_agent = GmailAgent()
+        self.drive_agent = DriveAgent()
 
     def handle_intent(self, intent: str, parameters: dict) -> str:
         print("Обработка intent:", intent, "с параметрами:", parameters)
@@ -21,6 +22,10 @@ class Orchestrator:
             return self._handle_show_messages(parameters)
         elif intent == "clear_mail":
             return self._handle_clear_mail(parameters)
+        elif intent == "save_photo":
+            return self._handle_save_photo(parameters)
+        elif intent == "show_photos":
+            return self._handle_show_photos(parameters)
         else:
             return "Извините, я не понял вашу команду или это пока не реализовано."
 
@@ -75,7 +80,6 @@ class Orchestrator:
             return "Ничего не найдено по заданным ключевым словам."
 
     def _handle_send_email(self, params: dict) -> str:
-        # Если прямой адрес указан
         to_address = params.get("to_address")
         message_content = params.get("message_content", "")
         scheduled_day = params.get("scheduled_day")
@@ -88,7 +92,6 @@ class Orchestrator:
                 sent = self.gmail_agent.send_email(to_address, subject, message_content)
                 return f"Письмо отправлено: {sent}"
         else:
-            # Поиск контакта по имени и/или компании
             name = params.get("contact_name")
             company = params.get("company")
             contacts = self.contacts_agent.search_contacts(name=name, company=company)
@@ -114,15 +117,9 @@ class Orchestrator:
                     else:
                         line += " (Email не указан)"
                     lines.append(line)
-                return "Найдено несколько контактов:\n" + "\n".join(
-                    lines) + "\nПожалуйста, уточните номер нужного контакта."
+                return "Найдено несколько контактов:\n" + "\n".join(lines) + "\nПожалуйста, уточните номер нужного контакта."
 
     def _handle_show_messages(self, params: dict) -> str:
-        """
-        Обрабатывает запрос "Покажи последние сообщения от <контакт>".
-        Находит контакт по имени (и, опционально, компании), затем извлекает email и запрашивает последние сообщения.
-        Выводит тему, дату и краткий фрагмент содержимого каждого письма.
-        """
         name = params.get("contact_name")
         company = params.get("company")
         contacts = self.contacts_agent.search_contacts(name=name, company=company)
@@ -152,17 +149,9 @@ class Orchestrator:
                 else:
                     line += " (Email не указан)"
                 lines.append(line)
-            return "Найдено несколько контактов:\n" + "\n".join(
-                lines) + "\nПожалуйста, уточните номер нужного контакта."
+            return "Найдено несколько контактов:\n" + "\n".join(lines) + "\nПожалуйста, уточните номер нужного контакта."
 
     def _handle_clear_mail(self, params: dict) -> str:
-        """
-        Обрабатывает запросы на очистку почтовых папок.
-        Ожидается, что параметр "target" может принимать значения:
-         - "spam" – очистить папку спам,
-         - "trash" – очистить корзину,
-         - "spam_and_trash" – сначала очистить спам, затем корзину.
-        """
         target = params.get("target", "").lower()
         results = []
         if target in ["spam", "spam_and_trash"]:
@@ -175,3 +164,26 @@ class Orchestrator:
             return "\n".join(results)
         else:
             return "Не указано, какую папку очищать. Укажите 'spam', 'trash' или 'spam_and_trash'."
+
+    def _handle_save_photo(self, params: dict) -> str:
+        file_path = params.get("file_path")
+        file_name = params.get("file_name")
+        folder_name = params.get("folder_name", "Photos")
+        if not file_path or not file_name:
+            return "Параметры файла не указаны."
+        result = self.drive_agent.save_photo(file_path, file_name, folder_name)
+        return f"Фото сохранено: {result.get('name')} (ID: {result.get('id')})"
+
+    def _handle_show_photos(self, params: dict) -> str:
+        folder_keyword = params.get("folder_keyword")
+        if not folder_keyword:
+            return "Не указано название папки для поиска фотографий."
+        photos = self.drive_agent.list_photos_in_folder(folder_keyword)
+        if photos:
+            lines = []
+            for photo in photos:
+                line = f"{photo.get('name')} (ссылка: {photo.get('webViewLink')})"
+                lines.append(line)
+            return "\n".join(lines)
+        else:
+            return "Фотографии не найдены в указанной папке."
