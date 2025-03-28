@@ -7,6 +7,7 @@ from .synonyms import NAME_SYNONYMS  # Файл synonyms.py
 
 morph = pymorphy2.MorphAnalyzer()
 
+
 def normalize_word(word: str) -> str:
     """
     Приводит слово к его нормальной форме (именительный падеж).
@@ -15,9 +16,11 @@ def normalize_word(word: str) -> str:
     parsed = morph.parse(word)[0]
     return parsed.normal_form
 
+
 class ContactsAgent:
     def __init__(self):
         creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH)
+        # Добавляем поле birthdays в список personFields
         self.service = build('people', 'v1', credentials=creds)
 
     def search_contacts(self, name=None, company=None):
@@ -26,6 +29,8 @@ class ContactsAgent:
         Если name состоит из одного слова (например, "Антон", "Антоха"),
         то производится нормализация и проверка по словарю синонимов.
         Если name содержит несколько слов, используется обычное сравнение подстроки.
+
+        Теперь дополнительно извлекается информация о днях рождения.
         """
         user_name_clean = (name or "").strip().lower()
         if user_name_clean:
@@ -40,10 +45,11 @@ class ContactsAgent:
         else:
             normalized_input = None
 
+        # Запрашиваем контакты. Добавляем поле 'birthdays' для получения дня рождения.
         results = self.service.people().connections().list(
             resourceName='people/me',
             pageSize=1000,
-            personFields='names,phoneNumbers,emailAddresses,organizations'
+            personFields='names,phoneNumbers,emailAddresses,organizations,birthdays'
         ).execute()
         connections = results.get('connections', [])
         matched_contacts = []
@@ -56,7 +62,8 @@ class ContactsAgent:
             if person_name_lower:
                 first_word = person_name_lower.split()[0]
                 normalized_contact = normalize_word(first_word)
-                print(f"Контакт: '{person_name}' -> первая лексема: '{first_word}', нормализовано: '{normalized_contact}'")
+                print(
+                    f"Контакт: '{person_name}' -> первая лексема: '{first_word}', нормализовано: '{normalized_contact}'")
             else:
                 normalized_contact = ""
 
@@ -70,18 +77,15 @@ class ContactsAgent:
                     if normalized_contact not in synonyms_list:
                         continue
 
-            if company:
-                company_lower = company.strip().lower()
-                companies_lower = [c.lower() for c in self._extract_companies(person)]
-                if not any(company_lower in c for c in companies_lower):
-                    continue
-
-            matched_contacts.append({
+            # Собираем данные контакта
+            contact_data = {
                 "name": person_name,
                 "phones": self._extract_phones(person),
                 "emails": self._extract_emails(person),
-                "companies": self._extract_companies(person)
-            })
+                "companies": self._extract_companies(person),
+                "birthdays": self._extract_birthdays(person)
+            }
+            matched_contacts.append(contact_data)
         return matched_contacts
 
     def _extract_name(self, person):
@@ -101,3 +105,23 @@ class ContactsAgent:
     def _extract_companies(self, person):
         orgs = person.get('organizations', [])
         return [o.get('name', '').strip() for o in orgs if o.get('name')]
+
+    def _extract_birthdays(self, person):
+        """
+        Извлекает дни рождения контакта.
+        Если поле 'birthdays' присутствует и содержит дату, возвращает список дат в формате "DD.MM.YYYY"
+        (или "DD.MM", если год не указан).
+        """
+        birthdays = person.get('birthdays', [])
+        results = []
+        for b in birthdays:
+            date = b.get('date')
+            if date:
+                day = date.get('day')
+                month = date.get('month')
+                year = date.get('year')
+                if day and month and year:
+                    results.append(f"{day:02d}.{month:02d}.{year}")
+                elif day and month:
+                    results.append(f"{day:02d}.{month:02d}")
+        return results

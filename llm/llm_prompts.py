@@ -11,6 +11,10 @@ FEW_SHOT_EXAMPLES = r"""
 3. Для intent "search_contact" объект "parameters" должен содержать:
    - "contact_name": строка (имя контакта, в именительном падеже, например, "Антон").
    - "company": строка или null (если не указана).
+   - Дополнительно может содержать "requested_field": строка, которая может принимать значения:
+       • "phone" — для номера телефона (по умолчанию),
+       • "email" — для почты,
+       • "birthday" — для дня рождения.
 4. Для intent "send_email" объект "parameters" должен содержать:
    - "contact_name": строка (имя получателя).
    - "email_type": строка (например, "рабочий" или "личный").
@@ -22,7 +26,7 @@ FEW_SHOT_EXAMPLES = r"""
      "intent": "unknown",
      "parameters": {}
    }
-7. Если имя задано в склонённой форме (например, "Антону"), нормализуй его до базовой (именительного) формы (например, "Антон").
+7. Если имя задано в склонённой форме (например, "Антону" или "Антохи"), нормализуй его до базовой (именительного) формы (например, "Антон").
 
 Примеры:
 
@@ -33,7 +37,8 @@ FEW_SHOT_EXAMPLES = r"""
   "intent": "search_contact",
   "parameters": {
     "contact_name": "Антон",
-    "company": null
+    "company": null,
+    "requested_field": "phone"
   }
 }
 
@@ -44,22 +49,36 @@ FEW_SHOT_EXAMPLES = r"""
   "intent": "search_contact",
   "parameters": {
     "contact_name": "Антон",
-    "company": "ЧелГу"
+    "company": "ЧелГу",
+    "requested_field": "phone"
   }
 }
 
 [Пример 3]
-Пользователь: "Дай номер Антона Сергеевича"
+Пользователь: "Когда день рождения у Антохи?"
 Ответ:
 {
   "intent": "search_contact",
   "parameters": {
-    "contact_name": "Антон Сергеевич",
-    "company": null
+    "contact_name": "Антон",
+    "company": null,
+    "requested_field": "birthday"
   }
 }
 
 [Пример 4]
+Пользователь: "Дай мне почту Антохи из ЧелГУ"
+Ответ:
+{
+  "intent": "search_contact",
+  "parameters": {
+    "contact_name": "Антон",
+    "company": "ЧелГУ",
+    "requested_field": "email"
+  }
+}
+
+[Пример 5]
 Пользователь: "Дай документ, где указана цена холодильника"
 Ответ:
 {
@@ -69,7 +88,7 @@ FEW_SHOT_EXAMPLES = r"""
   }
 }
 
-[Пример 5]
+[Пример 6]
 Пользователь: "Не знаешь, сколько времени?"
 Ответ:
 {
