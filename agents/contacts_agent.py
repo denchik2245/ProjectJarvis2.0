@@ -26,26 +26,23 @@ class ContactsAgent:
     def search_contacts(self, name=None, company=None):
         """
         Ищет контакты по имени и компании.
-        Если name состоит из одного слова (например, "Антон", "Антоха"),
-        то производится нормализация и проверка по словарю синонимов.
-        Если name содержит несколько слов, используется обычное сравнение подстроки.
-
-        Теперь дополнительно извлекается информация о днях рождения.
+        Если name состоит из одного слова (например, "Миша", "Михаила"),
+        то производится нормализация первой лексемы и поиск с использованием словаря синонимов.
+        Если name содержит несколько слов (например, "Михаил Сергеевич"),
+        то нормализуются все слова и сравниваются только точные совпадения.
+        Дополнительно извлекается информация о днях рождения.
         """
         user_name_clean = (name or "").strip().lower()
+        normalized_query = None
+        synonyms_list = None
         if user_name_clean:
             words = user_name_clean.split()
             if len(words) == 1:
                 normalized_input = normalize_word(words[0])
-                # Получаем список синонимов для normalized_input,
-                # если его нет в словаре, используем само normalized_input.
                 synonyms_list = NAME_SYNONYMS.get(normalized_input, [normalized_input])
             else:
-                normalized_input = None  # будем искать по подстроке
-        else:
-            normalized_input = None
+                normalized_query = " ".join([normalize_word(w) for w in words])
 
-        # Запрашиваем контакты. Добавляем поле 'birthdays' для получения дня рождения.
         results = self.service.people().connections().list(
             resourceName='people/me',
             pageSize=1000,
@@ -58,7 +55,6 @@ class ContactsAgent:
             person_name = self._extract_name(person)
             person_name_lower = person_name.lower()
 
-            # Отладочный вывод: покажем имя контакта и его первую лексему с нормализацией
             if person_name_lower:
                 first_word = person_name_lower.split()[0]
                 normalized_contact = normalize_word(first_word)
@@ -68,16 +64,20 @@ class ContactsAgent:
                 normalized_contact = ""
 
             if user_name_clean:
-                if normalized_input is None:
-                    # Многословный запрос – ищем точное вхождение
-                    if user_name_clean not in person_name_lower:
+                if normalized_query:
+                    normalized_full = " ".join([normalize_word(w) for w in person_name_lower.split()])
+                    if normalized_full != normalized_query:
                         continue
                 else:
-                    # Одно слово: проверяем, содержится ли нормализованное имя контакта в списке синонимов
                     if normalized_contact not in synonyms_list:
                         continue
 
-            # Собираем данные контакта
+            if company:
+                company_lower = company.strip().lower()
+                companies_lower = [c.lower() for c in self._extract_companies(person)]
+                if not any(company_lower in c for c in companies_lower):
+                    continue
+
             contact_data = {
                 "name": person_name,
                 "phones": self._extract_phones(person),
@@ -87,6 +87,38 @@ class ContactsAgent:
             }
             matched_contacts.append(contact_data)
         return matched_contacts
+
+    def add_contact(self, contact_name: str, phone: str, company: str = None, birthday: str = None) -> dict:
+        """
+        Добавляет новый контакт с заданными данными:
+         - contact_name: имя контакта (строка).
+         - phone: номер телефона (строка).
+         - company: название компании (строка или None).
+         - birthday: строка в формате "DD.MM.YYYY" или "DD.MM" (опционально).
+        Использует People API для создания контакта.
+        """
+        person = {
+            "names": [{"givenName": contact_name}],
+            "phoneNumbers": [{"value": phone}]
+        }
+        if company:
+            person["organizations"] = [{"name": company}]
+        if birthday:
+            parts = birthday.split('.')
+            date_obj = {}
+            if len(parts) == 3:
+                day, month, year = parts
+                date_obj["day"] = int(day)
+                date_obj["month"] = int(month)
+                date_obj["year"] = int(year)
+            elif len(parts) == 2:
+                day, month = parts
+                date_obj["day"] = int(day)
+                date_obj["month"] = int(month)
+            if date_obj:
+                person["birthdays"] = [{"date": date_obj}]
+        new_contact = self.service.people().createContact(body=person).execute()
+        return new_contact
 
     def _extract_name(self, person):
         names = person.get('names', [])
@@ -107,11 +139,6 @@ class ContactsAgent:
         return [o.get('name', '').strip() for o in orgs if o.get('name')]
 
     def _extract_birthdays(self, person):
-        """
-        Извлекает дни рождения контакта.
-        Если поле 'birthdays' присутствует и содержит дату, возвращает список дат в формате "DD.MM.YYYY"
-        (или "DD.MM", если год не указан).
-        """
         birthdays = person.get('birthdays', [])
         results = []
         for b in birthdays:

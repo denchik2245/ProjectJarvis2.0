@@ -26,10 +26,13 @@ class Orchestrator:
             return self._handle_save_photo(parameters)
         elif intent == "show_photos":
             return self._handle_show_photos(parameters)
+        elif intent == "add_contact":
+            return self._handle_add_contact(parameters)
         else:
             return "Извините, я не понял вашу команду или это пока не реализовано."
 
     def _handle_search_contact(self, params: dict) -> str:
+        # Существующий код поиска контактов...
         name = params.get("contact_name")
         company = params.get("company")
         requested = params.get("requested_field", "phone")
@@ -187,3 +190,14 @@ class Orchestrator:
             return "\n".join(lines)
         else:
             return "Фотографии не найдены в указанной папке."
+
+    def _handle_add_contact(self, params: dict) -> str:
+        contact_name = params.get("contact_name")
+        phone = params.get("phone")
+        company = params.get("company")
+        birthday = params.get("birthday")
+        if not contact_name or not phone:
+            return "Для добавления контакта необходимы имя и телефон."
+        result = self.contacts_agent.add_contact(contact_name, phone, company, birthday)
+        # result содержит, например, поле 'resourceName'
+        return f"Контакт добавлен: {result.get('resourceName', 'неизвестно')}"
