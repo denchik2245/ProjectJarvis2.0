@@ -1,3 +1,4 @@
+from agents.YandexWeather_agent import YandexWeatherAgent
 from agents.calendar_agent import CalendarAgent
 from agents.contacts_agent import ContactsAgent
 from agents.docs_agent import DocsAgent
@@ -23,6 +24,7 @@ class Orchestrator:
         self.gmail_agent = GmailAgent()
         self.drive_agent = DriveAgent()
         self.calendar_agent = CalendarAgent()
+        self.weather_agent = YandexWeatherAgent()
 
     def handle_intent(self, intent: str, parameters: dict):
         print("Обработка intent:", intent, "с параметрами:", parameters)
@@ -66,6 +68,14 @@ class Orchestrator:
             return self._handle_create_meeting(parameters)
         elif intent == "cancel_meeting":
             return self._handle_cancel_meeting(parameters)
+
+        elif intent == "current_weather":
+            return self._handle_current_weather(parameters)
+        elif intent == "current_temperature":
+            return self._handle_current_temperature(parameters)
+        elif intent == "week_forecast":
+            return self._handle_week_forecast(parameters)
+
         else:
             return "Извините, я не понял вашу команду или это пока не реализовано."
 
@@ -491,28 +501,100 @@ class Orchestrator:
             text = f"На {event_date.strftime('%d.%m.%Y')} событий не найдено."
         else:
             lines = []
-            for event in events:
+            for idx, event in enumerate(events, start=1):
                 summary = event.get("summary", "Без названия")
-                start = event.get("start", {}).get("dateTime", event.get("start", {}).get("date"))
-                lines.append(f"{summary} - {start}")
-            text = f"События на {event_date.strftime('%d.%m.%Y')}:\n" + "\n".join(lines)
+                # Получаем время начала и окончания события
+                start_time_str = event.get("start", {}).get("dateTime")
+                end_time_str = event.get("end", {}).get("dateTime")
+                if start_time_str and end_time_str:
+                    try:
+                        start_dt = datetime.datetime.fromisoformat(start_time_str)
+                        end_dt = datetime.datetime.fromisoformat(end_time_str)
+                        start_formatted = start_dt.strftime("%H:%M")
+                        end_formatted = end_dt.strftime("%H:%M")
+                    except Exception:
+                        start_formatted = start_time_str
+                        end_formatted = end_time_str
+                    time_str = f"({start_formatted} - {end_formatted})"
+                else:
+                    time_str = ""
+                # Формируем строку для события
+                line = f"{idx}. {summary} {time_str}".strip()
+                # Добавляем дополнительные поля, если они есть
+                if event.get("location"):
+                    line += f", Место - {event.get('location')}"
+                if event.get("description"):
+                    line += f", Описание - {event.get('description')}"
+                lines.append(line)
+            text = f"События на {event_date.strftime('%d.%m.%Y')}\n\n" + "\n".join(lines)
         return {"text": text, "attachments": [], "links": []}
 
-    def _handle_list_events_period(self, params: dict) -> dict:
-        # Предполагается, что запрашивается следующая неделя: от сегодня+7 до сегодня+14 дней
+    def get_next_week_period(self) -> (datetime.date, datetime.date):
         today = datetime.date.today()
-        start_date = today + datetime.timedelta(days=7)
-        end_date = today + datetime.timedelta(days=14)
-        events = self.calendar_agent.list_events_for_period(start_date, end_date)
+        # Определяем, сколько дней осталось до следующего понедельника
+        days_until_monday = (7 - today.weekday()) % 7
+        if days_until_monday == 0:
+            days_until_monday = 7  # если сегодня понедельник, берем следующую неделю
+        next_monday = today + datetime.timedelta(days=days_until_monday)
+        next_sunday = next_monday + datetime.timedelta(days=6)
+        return next_monday, next_sunday
+
+    def _handle_list_events_period(self, params: dict) -> dict:
+        # Вычисляем даты начала и конца следующей календарной недели (с понедельника по воскресенье)
+        today = datetime.date.today()
+        days_until_monday = (7 - today.weekday()) % 7
+        if days_until_monday == 0:
+            days_until_monday = 7  # если сегодня понедельник, берем следующую неделю
+        next_monday = today + datetime.timedelta(days=days_until_monday)
+        next_sunday = next_monday + datetime.timedelta(days=6)
+
+        events = self.calendar_agent.list_events_for_period(next_monday, next_sunday)
         if not events:
             text = "События на следующую неделю отсутствуют."
         else:
-            lines = []
+            # Группируем события по датам
+            grouped_events = {}
             for event in events:
-                summary = event.get("summary", "Без названия")
-                start = event.get("start", {}).get("dateTime", event.get("start", {}).get("date"))
-                lines.append(f"{summary} - {start}")
-            text = "События на следующую неделю:\n" + "\n".join(lines)
+                start_time_str = event.get("start", {}).get("dateTime")
+                if not start_time_str:
+                    continue
+                try:
+                    dt = datetime.datetime.fromisoformat(start_time_str)
+                except Exception:
+                    continue
+                event_date = dt.date()
+                if event_date not in grouped_events:
+                    grouped_events[event_date] = []
+                grouped_events[event_date].append((dt, event))
+
+            # Сортируем даты и события внутри каждой даты
+            sorted_dates = sorted(grouped_events.keys())
+            week_days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+            output_lines = []
+            for day in sorted_dates:
+                weekday = week_days[day.weekday()]
+                header = f"{weekday}, {day.strftime('%d.%m.%Y')}"
+                output_lines.append(header)
+                events_for_day = sorted(grouped_events[day], key=lambda x: x[0])
+                for idx, (start_dt, event) in enumerate(events_for_day, start=1):
+                    summary = event.get("summary", "Без названия")
+                    end_time_str = event.get("end", {}).get("dateTime")
+                    if start_dt and end_time_str:
+                        try:
+                            end_dt = datetime.datetime.fromisoformat(end_time_str)
+                            time_str = f"({start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')})"
+                        except Exception:
+                            time_str = ""
+                    else:
+                        time_str = ""
+                    line = f"  {idx}. {summary} {time_str}".strip()
+                    if event.get("location"):
+                        line += f", Место - {event.get('location')}"
+                    if event.get("description"):
+                        line += f", Описание - {event.get('description')}"
+                    output_lines.append(line)
+                output_lines.append("")  # пустая строка между днями
+            text = "События на следующую неделю:\n\n" + "\n".join(output_lines)
         return {"text": text, "attachments": [], "links": []}
 
     def _handle_create_meeting(self, params: dict) -> str:
@@ -599,3 +681,19 @@ class Orchestrator:
             return "Ошибка: не удалось получить ID события."
         self.calendar_agent.delete_event(event_id)
         return f"Встреча '{nearest_event.get('summary')}' отменена."
+
+    """
+    КАЛЕНДАРЬ
+    """
+
+    def _handle_current_weather(self, params: dict):
+        city = params.get("city")
+        return self.weather_agent.get_today_weather(city)
+
+    def _handle_current_temperature(self, params: dict):
+        city = params.get("city")
+        return self.weather_agent.get_current_temperature(city)
+
+    def _handle_week_forecast(self, params: dict):
+        city = params.get("city")
+        return self.weather_agent.get_week_forecast(city)
