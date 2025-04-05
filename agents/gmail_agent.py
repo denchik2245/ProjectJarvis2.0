@@ -5,6 +5,8 @@ from calendar import monthrange
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from config import GOOGLE_CREDENTIALS_PATH
+from base64 import urlsafe_b64decode
+import os
 
 
 class GmailAgent:
@@ -12,10 +14,8 @@ class GmailAgent:
         creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH)
         self.service = build('gmail', 'v1', credentials=creds)
 
+    # Отправить письмо на указанный адрес
     def send_email(self, to_address: str, subject: str, body: str) -> dict:
-        """
-        Отправляет письмо немедленно на указанный адрес.
-        """
         message = MIMEText(body, 'plain', 'utf-8')
         message['to'] = to_address
         message['subject'] = subject
@@ -26,6 +26,7 @@ class GmailAgent:
         ).execute()
         return sent_message
 
+    # Отправить письмо в определенное время
     def schedule_email(self, to_address: str, subject: str, body: str, scheduled_day: int) -> str:
         """
         Планирует отправку письма на указанный день текущего месяца (или следующего, если день уже прошёл).
@@ -48,6 +49,7 @@ class GmailAgent:
         return (f"Письмо для адреса {to_address} запланировано на "
                 f"{scheduled_date.strftime('%d.%m.%Y %H:%M')}. Текст письма: {body}")
 
+    # Получить последние сообщения от определенного человека
     def list_messages_from_address(self, from_address: str, max_results: int = 10) -> list:
         """
         Возвращает список (до max_results) последних сообщений, где отправитель равен from_address.
@@ -73,6 +75,7 @@ class GmailAgent:
             })
         return results
 
+    # Очистить спам
     def empty_spam(self) -> str:
         """
         Очищает папку "Спам": удаляет все сообщения, помеченные как SPAM.
@@ -86,10 +89,8 @@ class GmailAgent:
         else:
             return "Папка 'Спам' уже пуста."
 
+    # Очистить корзину
     def empty_trash(self) -> str:
-        """
-        Очищает корзину: удаляет все сообщения, помеченные как TRASH.
-        """
         trash_ids = self._list_messages_by_label("TRASH")
         if trash_ids:
             self.service.users().messages().batchDelete(
@@ -99,12 +100,169 @@ class GmailAgent:
         else:
             return "Корзина уже пуста."
 
+    # Очистить промоакции
+    def empty_promotions(self) -> str:
+        promo_ids = self._list_messages_by_label("CATEGORY_PROMOTIONS")
+        if promo_ids:
+            self.service.users().messages().batchDelete(
+                userId='me', body={"ids": promo_ids}
+            ).execute()
+            return f"Очистка промоакций завершена. Удалено сообщений: {len(promo_ids)}"
+        else:
+            return "Папка промоакций уже пуста."
+
+    # Возвращает список ID сообщений с заданным label
     def _list_messages_by_label(self, label: str) -> list:
-        """
-        Возвращает список ID сообщений с заданным label.
-        """
         response = self.service.users().messages().list(
             userId='me', labelIds=[label]
         ).execute()
         messages = response.get('messages', [])
         return [msg['id'] for msg in messages]
+
+    def list_unread_messages_with_attachments(self, max_results: int = 10) -> list:
+        """
+        Возвращает список (до max_results) непрочитанных сообщений с деталями:
+          - subject
+          - from
+          - date
+          - snippet
+          - attachments (список словарей с attachmentId, messageId, filename и т.д.)
+        """
+        response = self.service.users().messages().list(
+            userId='me',
+            labelIds=["UNREAD"],  # Для непрочитанных
+            maxResults=max_results
+        ).execute()
+
+        messages_info = []
+        messages = response.get('messages', [])
+        for msg in messages:
+            msg_detail = self.service.users().messages().get(
+                userId='me',
+                id=msg['id'],
+                format='full'
+            ).execute()
+
+            headers = msg_detail.get('payload', {}).get('headers', [])
+            header_dict = {h['name']: h['value'] for h in headers}
+
+            subject = header_dict.get("Subject", "(без темы)")
+            from_ = header_dict.get("From", "")
+            date_ = header_dict.get("Date", "")
+            snippet = msg_detail.get('snippet', '')
+
+            # Ищем вложения
+            attachments = []
+            payload = msg_detail.get('payload', {})
+            parts = payload.get('parts', [])
+            for part in parts:
+                filename = part.get("filename")
+                body = part.get("body", {})
+                if filename and body.get("attachmentId"):
+                    attachment_id = body["attachmentId"]
+                    attachments.append({
+                        "filename": filename,
+                        "mimeType": part.get("mimeType", ""),
+                        "attachmentId": attachment_id,
+                        "messageId": msg['id']
+                    })
+
+            messages_info.append({
+                "subject": subject,
+                "from": from_,
+                "date": date_,
+                "snippet": snippet,
+                "attachments": attachments
+            })
+
+        return messages_info
+
+    def list_starred_messages_with_attachments(self, max_results: int = 10) -> list:
+        """
+        Возвращает список последних (до max_results) сообщений со звёздочкой (STARRED).
+        Для каждого сообщения возвращает:
+          - subject
+          - from
+          - date
+          - snippet (короткий фрагмент)
+          - attachments (список словарей с информацией о каждом вложении)
+        """
+        response = self.service.users().messages().list(
+            userId='me',
+            labelIds=["STARRED"],
+            maxResults=max_results
+        ).execute()
+
+        messages_info = []
+        messages = response.get('messages', [])
+        for msg in messages:
+            # Запрашиваем формат 'full', чтобы получить и тело, и структуру частей, и snippet
+            msg_detail = self.service.users().messages().get(
+                userId='me',
+                id=msg['id'],
+                format='full'
+            ).execute()
+
+            # Ищем нужные заголовки
+            headers = msg_detail.get('payload', {}).get('headers', [])
+            header_dict = {h['name']: h['value'] for h in headers}
+            subject = header_dict.get("Subject", "(без темы)")
+            from_ = header_dict.get("From", "")
+            date_ = header_dict.get("Date", "")
+
+            # Короткий фрагмент
+            snippet = msg_detail.get('snippet', '')
+
+            # Список вложений
+            attachments = []
+
+            # Извлекаем структуру MIME
+            payload = msg_detail.get('payload', {})
+            parts = payload.get('parts', [])
+            for part in parts:
+                filename = part.get("filename")
+                body = part.get("body", {})
+                if filename and body.get("attachmentId"):
+                    attach_id = body["attachmentId"]
+                    attachments.append({
+                        "filename": filename,
+                        "mimeType": part.get("mimeType", ""),
+                        "attachmentId": attach_id,
+                        "messageId": msg['id']
+                    })
+
+            messages_info.append({
+                "subject": subject,
+                "from": from_,
+                "date": date_,
+                "snippet": snippet,
+                "attachments": attachments
+            })
+
+        return messages_info
+
+    def download_attachment(self, message_id: str, attachment_id: str, filename: str,
+                            save_dir: str = "./downloads") -> str:
+        """
+        Скачивает вложение из письма (message_id, attachment_id) и сохраняет в папку save_dir.
+        Возвращает путь к сохранённому файлу.
+        """
+        attach_resp = self.service.users().messages().attachments().get(
+            userId='me',
+            messageId=message_id,
+            id=attachment_id
+        ).execute()
+
+        file_data = attach_resp.get('data', "")
+        if not file_data:
+            return ""
+
+        file_bytes = urlsafe_b64decode(file_data.encode('utf-8'))
+
+        # Создаём папку, если не существует
+        os.makedirs(save_dir, exist_ok=True)
+        filepath = os.path.join(save_dir, filename)
+        with open(filepath, 'wb') as f:
+            f.write(file_bytes)
+
+        return filepath

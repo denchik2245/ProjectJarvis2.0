@@ -24,14 +24,6 @@ class ContactsAgent:
         self.service = build('people', 'v1', credentials=creds)
 
     def search_contacts(self, name=None, company=None):
-        """
-        Ищет контакты по имени и компании.
-        Если name состоит из одного слова (например, "Миша", "Михаила"),
-        то производится нормализация первой лексемы и поиск с использованием словаря синонимов.
-        Если name содержит несколько слов (например, "Михаил Сергеевич"),
-        то нормализуются все слова и сравниваются только точные совпадения.
-        Дополнительно извлекается информация о днях рождения.
-        """
         user_name_clean = (name or "").strip().lower()
         normalized_query = None
         synonyms_list = None
@@ -39,7 +31,17 @@ class ContactsAgent:
             words = user_name_clean.split()
             if len(words) == 1:
                 normalized_input = normalize_word(words[0])
-                synonyms_list = NAME_SYNONYMS.get(normalized_input, [normalized_input])
+                # Если ключа нет в словаре, ищем его в значениях
+                if normalized_input in NAME_SYNONYMS:
+                    synonyms_list = NAME_SYNONYMS[normalized_input]
+                else:
+                    for key, syn_list in NAME_SYNONYMS.items():
+                        if words[0] in syn_list:
+                            normalized_input = key
+                            synonyms_list = syn_list
+                            break
+                    if not synonyms_list:
+                        synonyms_list = [normalized_input]
             else:
                 normalized_query = " ".join([normalize_word(w) for w in words])
 

@@ -1,7 +1,6 @@
 import whisper
 import numpy as np
 
-
 class WhisperSTT:
     def __init__(self, model_name="large"):
         """

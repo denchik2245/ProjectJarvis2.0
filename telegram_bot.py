@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from telegram import ReplyKeyboardMarkup, KeyboardButton, InputFile
@@ -50,7 +51,7 @@ def voice_message_handler(update, context):
     new_file.download(voice_file_path)
 
     # Распознаем голос с помощью Whisper
-    stt = WhisperSTT(model_name="base")
+    stt = WhisperSTT(model_name="large")
     recognized_text = stt.transcribe_audio(voice_file_path)
 
     # Нормализуем текст (если необходимо)
@@ -87,35 +88,64 @@ def text_message_handler(update, context):
 
     orchestrator = Orchestrator()
 
-    if intent in ["show_photos", "show_files"]:
-        # Для обоих intent ожидаем, что orchestrator возвращает словарь с "attachments" и "links"
+    if intent in ["show_photos", "show_files", "list_starred", "list_unread", "list_events_date", "list_events_period"]:
+        # Для этих интентов ожидаем, что orchestrator возвращает словарь вида:
+        # {"text": "...", "attachments": [(file_id, file_name), ...], "links": [...]}
         result_dict = orchestrator.handle_intent(intent, parameters)
+        text = result_dict.get("text", "")
         attachments = result_dict.get("attachments", [])
         links = result_dict.get("links", [])
+
+        # Отправляем текст, если он есть
+        if text:
+            update.message.reply_text(text)
+
+        # Отправляем вложения (если есть)
         if attachments:
-            for file_id, file_name in attachments:
-                temp_path = f"temp_{file_name}"
-                orchestrator.drive_agent.download_file(file_id, temp_path)
-                # Определяем, является ли файл изображением по расширению
+            for file_identifier, file_name in attachments:
+                # Проверяем, является ли file_identifier локальным путём
+                if os.path.exists(file_identifier):
+                    send_path = file_identifier
+                else:
+                    # Если файл не найден локально, пытаемся скачать его с Google Drive
+                    temp_path = f"temp_{file_name}"
+                    try:
+                        orchestrator.drive_agent.download_file(file_identifier, temp_path)
+                        send_path = temp_path
+                    except Exception as e:
+                        logging.error(f"Ошибка скачивания файла {file_name}: {e}")
+                        continue
+
                 ext = os.path.splitext(file_name)[1].lower()
                 try:
-                    with open(temp_path, "rb") as f:
+                    with open(send_path, "rb") as f:
                         if ext in [".jpg", ".jpeg", ".png"]:
                             context.bot.send_photo(chat_id=update.message.chat_id, photo=InputFile(f))
                         else:
                             context.bot.send_document(chat_id=update.message.chat_id, document=InputFile(f))
                 except Exception as e:
                     logging.error(f"Ошибка отправки файла {file_name}: {e}")
-                os.remove(temp_path)
+                finally:
+                    # Если файл временный, удаляем его
+                    if send_path.startswith("temp_") and os.path.exists(send_path):
+                        os.remove(send_path)
+
+        # Отправляем ссылки (если есть)
         if links:
-            # Если остались файлы, выводим текстовое сообщение со ссылками
             text_links = "\n".join(links)
             update.message.reply_text(text_links)
-        if not attachments and not links:
-            update.message.reply_text("Файлы не найдены в указанной папке.")
+
+        # Если ничего не найдено
+        if not text and not attachments and not links:
+            update.message.reply_text("Нет данных для отображения.")
+
     else:
+        # Для остальных интентов возвращаем обычный текст или JSON-строку
         response = orchestrator.handle_intent(intent, parameters)
+        if isinstance(response, dict):
+            response = json.dumps(response, ensure_ascii=False, indent=2)
         update.message.reply_text(response)
+
 
 def send_photo_from_drive(bot, chat_id, drive_agent, file_id, file_name):
     # Сохраняем фото во временный файл
