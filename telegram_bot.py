@@ -66,71 +66,36 @@ def start_handler(update, context):
 def help_handler(update, context):
     update.message.reply_text(HELP_TEXT)
 
-def voice_message_handler(update, context):
-    # Получаем файл голосового сообщения
-    file_id = update.message.voice.file_id
-    new_file = context.bot.get_file(file_id)
-    voice_file_path = "temp_voice.ogg"
-    new_file.download(voice_file_path)
-
-    # Распознаем голос с помощью Whisper
-    stt = WhisperSTT(model_name="large")
-    recognized_text = stt.transcribe_audio(voice_file_path)
-
-    # Нормализуем текст (если необходимо)
-    normalized_text = normalize_russian_text(recognized_text)
-
-    # Удаляем временный файл
-    os.remove(voice_file_path)
-
-    # Анализируем запрос через локальную LLM
-    llm = LocalLLM()
-    parse_result = llm.analyze_request(recognized_text)
-    intent = parse_result.get("intent", "unknown")
-    parameters = parse_result.get("parameters", {})
-
-    # Вызываем оркестратор
-    orchestrator = Orchestrator()
-    response = orchestrator.handle_intent(intent, parameters)
-
-    print("LLM RAW OUTPUT:", parse_result)
-    update.message.reply_text(f"Распознанный текст: {recognized_text}\n\n{response}")
-
-def text_message_handler(update, context):
-    user_text = update.message.text
-
-    # Если текст совпадает с "Помощь", перенаправляем на help_handler
-    if user_text.strip().lower() == "помощь":
+def process_command(update, context, command_text):
+    # Если команда "помощь", перенаправляем на help_handler
+    if command_text.strip().lower() == "помощь":
         help_handler(update, context)
         return
 
     llm = LocalLLM()
-    parse_result = llm.analyze_request(user_text)
+    parse_result = llm.analyze_request(command_text)
     intent = parse_result.get("intent", "unknown")
     parameters = parse_result.get("parameters", {})
 
     orchestrator = Orchestrator()
 
+    # Если ответ ожидается в виде словаря с текстом, вложениями и ссылками
     if intent in ["show_photos", "show_files", "list_starred", "list_unread", "list_events_date", "list_events_period"]:
-        # Для этих интентов ожидаем, что orchestrator возвращает словарь вида:
-        # {"text": "...", "attachments": [(file_id, file_name), ...], "links": [...]}
         result_dict = orchestrator.handle_intent(intent, parameters)
         text = result_dict.get("text", "")
         attachments = result_dict.get("attachments", [])
         links = result_dict.get("links", [])
 
-        # Отправляем текст, если он есть
+        # Отправляем текст
         if text:
             update.message.reply_text(text)
 
-        # Отправляем вложения (если есть)
+        # Отправляем вложения
         if attachments:
             for file_identifier, file_name in attachments:
-                # Проверяем, является ли file_identifier локальным путём
                 if os.path.exists(file_identifier):
                     send_path = file_identifier
                 else:
-                    # Если файл не найден локально, пытаемся скачать его с Google Drive
                     temp_path = f"temp_{file_name}"
                     try:
                         orchestrator.drive_agent.download_file(file_identifier, temp_path)
@@ -149,11 +114,10 @@ def text_message_handler(update, context):
                 except Exception as e:
                     logging.error(f"Ошибка отправки файла {file_name}: {e}")
                 finally:
-                    # Если файл временный, удаляем его
                     if send_path.startswith("temp_") and os.path.exists(send_path):
                         os.remove(send_path)
 
-        # Отправляем ссылки (если есть)
+        # Отправляем ссылки
         if links:
             text_links = "\n".join(links)
             update.message.reply_text(text_links)
@@ -161,14 +125,39 @@ def text_message_handler(update, context):
         # Если ничего не найдено
         if not text and not attachments and not links:
             update.message.reply_text("Нет данных для отображения.")
-
     else:
-        # Для остальных интентов возвращаем обычный текст или JSON-строку
+        # Если ответ не требует дополнительной обработки
         response = orchestrator.handle_intent(intent, parameters)
         if isinstance(response, dict):
             response = json.dumps(response, ensure_ascii=False, indent=2)
         update.message.reply_text(response)
 
+def voice_message_handler(update, context):
+    # Получаем и скачиваем файл голосового сообщения
+    file_id = update.message.voice.file_id
+    new_file = context.bot.get_file(file_id)
+    voice_file_path = "temp_voice.ogg"
+    new_file.download(voice_file_path)
+
+    # Распознаем голосовое сообщение через Whisper
+    stt = WhisperSTT(model_name="large")
+    recognized_text = stt.transcribe_audio(voice_file_path)
+
+    # Нормализуем текст (если требуется)
+    normalized_text = normalize_russian_text(recognized_text)
+
+    # Удаляем временный файл
+    os.remove(voice_file_path)
+
+    # Можно уведомить пользователя о распознанном тексте
+    update.message.reply_text(f"Распознанный текст: {recognized_text}")
+
+    # Передаем полученный текст в общую функцию обработки команды
+    process_command(update, context, normalized_text)
+
+def text_message_handler(update, context):
+    user_text = update.message.text
+    process_command(update, context, user_text)
 
 def send_photo_from_drive(bot, chat_id, drive_agent, file_id, file_name):
     # Сохраняем фото во временный файл

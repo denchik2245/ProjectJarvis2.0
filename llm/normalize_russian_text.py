@@ -13,10 +13,6 @@ import pymorphy2
 morph = pymorphy2.MorphAnalyzer()
 
 def normalize_russian_text(text: str) -> str:
-    """
-    Приводит каждое слово текста к его нормальной форме.
-    Пример: "Дай мне номер Антона" -> "давать я номер антон"
-    """
     words = re.findall(r"[А-Яа-яA-Za-zёЁ]+", text)
     normalized = []
     for w in words:
