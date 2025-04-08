@@ -2,7 +2,7 @@ import re
 import pymorphy2
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from config import GOOGLE_CREDENTIALS_PATH
+from config import GOOGLE_CREDENTIALS_PATH, SCOPES
 from .synonyms import NAME_SYNONYMS  # Файл synonyms.py
 
 morph = pymorphy2.MorphAnalyzer()
@@ -18,9 +18,11 @@ def normalize_word(word: str) -> str:
 
 
 class ContactsAgent:
-    def __init__(self):
-        creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH)
-        # Добавляем поле birthdays в список personFields
+    def __init__(self, credentials_info=None):
+        if credentials_info is not None:
+            creds = Credentials.from_authorized_user_info(credentials_info, scopes=SCOPES)
+        else:
+            creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
         self.service = build('people', 'v1', credentials=creds)
 
     def search_contacts(self, name=None, company=None):

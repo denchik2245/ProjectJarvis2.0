@@ -2,17 +2,17 @@ import datetime
 from zoneinfo import ZoneInfo
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from config import GOOGLE_CREDENTIALS_PATH
+from config import SCOPES
 
 class CalendarAgent:
-    def __init__(self):
-        creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH)
+    def __init__(self, credentials_info: dict):
+        # credentials_info – словарь с учётными данными Google
+        creds = Credentials.from_authorized_user_info(credentials_info, scopes=SCOPES)
         self.service = build('calendar', 'v3', credentials=creds)
         self.calendar_id = 'primary'
         self.tz = ZoneInfo("Asia/Yekaterinburg")  # Временная зона календаря
 
     def create_event(self, title: str, start_datetime: datetime.datetime, reminder_minutes: int = None, attendees: list = None) -> dict:
-        # Если переданный datetime не timezone-aware, считаем его в нашей временной зоне
         if start_datetime.tzinfo is None:
             start_datetime = start_datetime.replace(tzinfo=self.tz)
         end_datetime = start_datetime + datetime.timedelta(hours=1)
@@ -36,10 +36,8 @@ class CalendarAgent:
         return created_event
 
     def list_events_for_date(self, date: datetime.date) -> list:
-        # Создаем datetime-объекты с временной зоной
         start_dt = datetime.datetime.combine(date, datetime.time.min, tzinfo=self.tz)
         end_dt = datetime.datetime.combine(date, datetime.time.max, tzinfo=self.tz)
-        # Переводим в UTC для запроса к API
         start_dt_utc = start_dt.astimezone(datetime.timezone.utc)
         end_dt_utc = end_dt.astimezone(datetime.timezone.utc)
         events_result = self.service.events().list(

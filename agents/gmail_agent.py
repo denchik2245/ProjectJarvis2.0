@@ -4,14 +4,16 @@ from datetime import datetime
 from calendar import monthrange
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from config import GOOGLE_CREDENTIALS_PATH
+from config import GOOGLE_CREDENTIALS_PATH, SCOPES
 from base64 import urlsafe_b64decode
 import os
 
-
 class GmailAgent:
-    def __init__(self):
-        creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH)
+    def __init__(self, credentials_info=None):
+        if credentials_info is not None:
+            creds = Credentials.from_authorized_user_info(credentials_info, scopes=SCOPES)
+        else:
+            creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH, scopes=SCOPES)
         self.service = build('gmail', 'v1', credentials=creds)
 
     # Отправить письмо на указанный адрес
@@ -51,10 +53,6 @@ class GmailAgent:
 
     # Получить последние сообщения от определенного человека
     def list_messages_from_address(self, from_address: str, max_results: int = 10) -> list:
-        """
-        Возвращает список (до max_results) последних сообщений, где отправитель равен from_address.
-        Для каждого сообщения возвращает тему, дату и краткий фрагмент (snippet) содержимого.
-        """
         query = f"from:{from_address}"
         response = self.service.users().messages().list(
             userId='me', q=query, maxResults=max_results
@@ -77,9 +75,6 @@ class GmailAgent:
 
     # Очистить спам
     def empty_spam(self) -> str:
-        """
-        Очищает папку "Спам": удаляет все сообщения, помеченные как SPAM.
-        """
         spam_ids = self._list_messages_by_label("SPAM")
         if spam_ids:
             self.service.users().messages().batchDelete(
@@ -120,17 +115,9 @@ class GmailAgent:
         return [msg['id'] for msg in messages]
 
     def list_unread_messages_with_attachments(self, max_results: int = 10) -> list:
-        """
-        Возвращает список (до max_results) непрочитанных сообщений с деталями:
-          - subject
-          - from
-          - date
-          - snippet
-          - attachments (список словарей с attachmentId, messageId, filename и т.д.)
-        """
         response = self.service.users().messages().list(
             userId='me',
-            labelIds=["UNREAD"],  # Для непрочитанных
+            labelIds=["UNREAD"],
             maxResults=max_results
         ).execute()
 
@@ -151,7 +138,6 @@ class GmailAgent:
             date_ = header_dict.get("Date", "")
             snippet = msg_detail.get('snippet', '')
 
-            # Ищем вложения
             attachments = []
             payload = msg_detail.get('payload', {})
             parts = payload.get('parts', [])
@@ -178,15 +164,6 @@ class GmailAgent:
         return messages_info
 
     def list_starred_messages_with_attachments(self, max_results: int = 10) -> list:
-        """
-        Возвращает список последних (до max_results) сообщений со звёздочкой (STARRED).
-        Для каждого сообщения возвращает:
-          - subject
-          - from
-          - date
-          - snippet (короткий фрагмент)
-          - attachments (список словарей с информацией о каждом вложении)
-        """
         response = self.service.users().messages().list(
             userId='me',
             labelIds=["STARRED"],
@@ -196,27 +173,21 @@ class GmailAgent:
         messages_info = []
         messages = response.get('messages', [])
         for msg in messages:
-            # Запрашиваем формат 'full', чтобы получить и тело, и структуру частей, и snippet
             msg_detail = self.service.users().messages().get(
                 userId='me',
                 id=msg['id'],
                 format='full'
             ).execute()
 
-            # Ищем нужные заголовки
             headers = msg_detail.get('payload', {}).get('headers', [])
             header_dict = {h['name']: h['value'] for h in headers}
             subject = header_dict.get("Subject", "(без темы)")
             from_ = header_dict.get("From", "")
             date_ = header_dict.get("Date", "")
 
-            # Короткий фрагмент
             snippet = msg_detail.get('snippet', '')
 
-            # Список вложений
             attachments = []
-
-            # Извлекаем структуру MIME
             payload = msg_detail.get('payload', {})
             parts = payload.get('parts', [])
             for part in parts:
@@ -243,10 +214,6 @@ class GmailAgent:
 
     def download_attachment(self, message_id: str, attachment_id: str, filename: str,
                             save_dir: str = "./downloads") -> str:
-        """
-        Скачивает вложение из письма (message_id, attachment_id) и сохраняет в папку save_dir.
-        Возвращает путь к сохранённому файлу.
-        """
         attach_resp = self.service.users().messages().attachments().get(
             userId='me',
             messageId=message_id,
@@ -259,7 +226,6 @@ class GmailAgent:
 
         file_bytes = urlsafe_b64decode(file_data.encode('utf-8'))
 
-        # Создаём папку, если не существует
         os.makedirs(save_dir, exist_ok=True)
         filepath = os.path.join(save_dir, filename)
         with open(filepath, 'wb') as f:

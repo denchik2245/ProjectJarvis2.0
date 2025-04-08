@@ -4,8 +4,9 @@ from dotenv import load_dotenv
 # Загружаем переменные окружения из файла .env
 load_dotenv()
 
-# Telegram
+# Telegram настройки
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+AUTH_SERVER_BASE_URL = os.getenv("AUTH_SERVER_BASE_URL", "http://localhost:5000")
 
 # Настройки для Deepseek (локальной модели)
 DEEPSEEKS_BASE_URL = os.getenv("DEEPSEEKS_BASE_URL", "http://127.0.0.1:11434/v1/completions")

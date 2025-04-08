@@ -1,23 +1,22 @@
 import json
 import logging
 import os
-from telegram import ReplyKeyboardMarkup, KeyboardButton, InputFile
+from telegram import ReplyKeyboardMarkup, KeyboardButton, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, MessageHandler, Filters, CommandHandler
 
 from llm.normalize_russian_text import normalize_russian_text
 from stt.whisper_stt import WhisperSTT
 from llm.local_llm import LocalLLM
 from orchestrator import Orchestrator
-from config import TELEGRAM_BOT_TOKEN
+from config import TELEGRAM_BOT_TOKEN, AUTH_SERVER_BASE_URL
 
 logging.basicConfig(level=logging.INFO)
 
-# Текст приветствия для /start
 START_TEXT = (
-    "Введите текст или голосовое сообщение. Для помощи нажмите кнопку 'Помощь'."
+    "Введите текст или голосовое сообщение. Для помощи нажмите кнопку 'Помощь'.\n"
+    "Чтобы привязать учётную запись Google, нажмите кнопку 'Авторизация'."
 )
 
-# Текст справки для /help
 HELP_TEXT = (
     "Доступные команды:\n\n"
     "=== Email ===\n"
@@ -29,19 +28,16 @@ HELP_TEXT = (
     "6) Очисти спам и корзину\n"
     "7) Покажи непрочитанные сообщения\n"
     "8) Покажи помеченные сообщения\n\n"
-
     "=== Google Calendar ===\n"
     "1) Добавь в календарь тренировку на 5 апреля в 18:00 и напомни за 30 минут\n"
     "2) Создай мне встречу с Иваном на 3 часа до начала\n"
     "3) Удали мне встречу с Иваном на 3 часа до начала\n"
     "4) Создай урок английского каждый понедельник в 19:00\n"
     "5) Покажи события на пятницу\n\n"
-
     "=== Google Drive ===\n"
     "1) Сохрани мне фото\n"
     "2) Покажи файлы из папки домашка\n"
     "3) Покажи все, что лежит в папке домашка\n\n"
-
     "=== Google Contacts ===\n"
     "1) Дай мне номер Антона из ЧелГУ\n"
     "2) Дай мне номер Антохи\n"
@@ -49,27 +45,34 @@ HELP_TEXT = (
     "4) Добавь контакт Глеб из ЧелГУ +79126973674\n"
     "5) Добавь контакт Глеб из ЧелГУ, день рождения 15.05.1990, номер +79126973674\n"
     "6) Дай мне почту и номер телефона Антохи\n\n"
-
     "=== Яндекс Погода ===\n"
     "1) Какая погода сейчас в Москве?\n"
     "2) Какая погода в Сочи на следующей неделе?\n\n"
-
     "Отправьте /help или нажмите кнопку 'Помощь' для повторного вывода этой справки."
 )
 
 def start_handler(update, context):
-    # Создаем постоянную клавиатуру с кнопкой "Помощь"
-    reply_keyboard = [[KeyboardButton("Помощь")]]
+    reply_keyboard = [[KeyboardButton("Помощь"), KeyboardButton("Авторизация")]]
     markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=False)
     update.message.reply_text(START_TEXT, reply_markup=markup)
 
 def help_handler(update, context):
     update.message.reply_text(HELP_TEXT)
 
+def auth_handler(update, context):
+    user_id = update.message.from_user.id
+    auth_link = f"{AUTH_SERVER_BASE_URL}/authorize?user_id={user_id}"
+    update.message.reply_text(
+        "Для привязки учётной записи Google скопируйте и откройте эту ссылку в браузере:\n" + auth_link
+    )
+
 def process_command(update, context, command_text):
-    # Если команда "помощь", перенаправляем на help_handler
-    if command_text.strip().lower() == "помощь":
+    text_lower = command_text.strip().lower()
+    if text_lower == "помощь":
         help_handler(update, context)
+        return
+    if text_lower == "авторизация":
+        auth_handler(update, context)
         return
 
     llm = LocalLLM()
@@ -77,20 +80,19 @@ def process_command(update, context, command_text):
     intent = parse_result.get("intent", "unknown")
     parameters = parse_result.get("parameters", {})
 
+    # Извлекаем Telegram-ID и передаём его в orchestrator
+    telegram_user_id = update.message.from_user.id
     orchestrator = Orchestrator()
+    result = orchestrator.handle_intent(intent, parameters, telegram_user_id=telegram_user_id)
 
-    # Если ответ ожидается в виде словаря с текстом, вложениями и ссылками
+    # Если ответ требует дополнительной обработки (например, фото, файлы, ссылки) – оставляем существующую логику.
     if intent in ["show_photos", "show_files", "list_starred", "list_unread", "list_events_date", "list_events_period"]:
-        result_dict = orchestrator.handle_intent(intent, parameters)
-        text = result_dict.get("text", "")
-        attachments = result_dict.get("attachments", [])
-        links = result_dict.get("links", [])
+        text = result.get("text", "")
+        attachments = result.get("attachments", [])
+        links = result.get("links", [])
 
-        # Отправляем текст
         if text:
             update.message.reply_text(text)
-
-        # Отправляем вложения
         if attachments:
             for file_identifier, file_name in attachments:
                 if os.path.exists(file_identifier):
@@ -116,43 +118,28 @@ def process_command(update, context, command_text):
                 finally:
                     if send_path.startswith("temp_") and os.path.exists(send_path):
                         os.remove(send_path)
-
-        # Отправляем ссылки
         if links:
             text_links = "\n".join(links)
             update.message.reply_text(text_links)
-
-        # Если ничего не найдено
         if not text and not attachments and not links:
             update.message.reply_text("Нет данных для отображения.")
     else:
-        # Если ответ не требует дополнительной обработки
-        response = orchestrator.handle_intent(intent, parameters)
+        response = result
         if isinstance(response, dict):
             response = json.dumps(response, ensure_ascii=False, indent=2)
         update.message.reply_text(response)
 
 def voice_message_handler(update, context):
-    # Получаем и скачиваем файл голосового сообщения
     file_id = update.message.voice.file_id
     new_file = context.bot.get_file(file_id)
     voice_file_path = "temp_voice.ogg"
     new_file.download(voice_file_path)
 
-    # Распознаем голосовое сообщение через Whisper
     stt = WhisperSTT(model_name="large")
     recognized_text = stt.transcribe_audio(voice_file_path)
-
-    # Нормализуем текст (если требуется)
     normalized_text = normalize_russian_text(recognized_text)
-
-    # Удаляем временный файл
     os.remove(voice_file_path)
-
-    # Можно уведомить пользователя о распознанном тексте
     update.message.reply_text(f"Распознанный текст: {recognized_text}")
-
-    # Передаем полученный текст в общую функцию обработки команды
     process_command(update, context, normalized_text)
 
 def text_message_handler(update, context):
@@ -160,12 +147,9 @@ def text_message_handler(update, context):
     process_command(update, context, user_text)
 
 def send_photo_from_drive(bot, chat_id, drive_agent, file_id, file_name):
-    # Сохраняем фото во временный файл
     temp_path = f"temp_{file_name}"
     drive_agent.download_file(file_id, temp_path)
-    # Отправляем фото
     bot.send_photo(chat_id=chat_id, photo=InputFile(temp_path))
-    # Удаляем временный файл
     os.remove(temp_path)
 
 def run_bot():
@@ -174,6 +158,8 @@ def run_bot():
 
     dp.add_handler(CommandHandler("start", start_handler))
     dp.add_handler(CommandHandler("help", help_handler))
+    dp.add_handler(MessageHandler(Filters.regex(r"^(Помощь|Авторизация)$"),
+                                  lambda u, c: auth_handler(u, c) if u.message.text=="Авторизация" else help_handler(u, c)))
     dp.add_handler(MessageHandler(Filters.voice, voice_message_handler))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_message_handler))
 
