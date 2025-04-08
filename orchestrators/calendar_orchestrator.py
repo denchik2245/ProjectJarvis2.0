@@ -2,8 +2,8 @@ import datetime
 from agents.calendar_agent import CalendarAgent
 from agents.format_date import format_date
 from orchestrators.common import parse_datetime
+from agents.contacts_agent import ContactsAgent
 from google_auth_manager import get_user_google_credentials
-
 
 def handle_calendar_intent(intent, parameters, telegram_user_id):
     creds = get_user_google_credentials(str(telegram_user_id))
@@ -26,7 +26,7 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
             return "Неверный формат даты или времени."
         try:
             reminder_minutes = int(reminder) if reminder is not None else None
-        except:
+        except Exception:
             reminder_minutes = None
         created_event = calendar_agent.create_event(title, event_dt, reminder_minutes)
         return f"Событие '{title}' создано на {event_dt.strftime('%d.%m.%Y %H:%M')}" + (
@@ -43,7 +43,7 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
             try:
                 day, month, year = date_query.split(".")
                 event_date = datetime.date(int(year), int(month), int(day))
-            except:
+            except Exception:
                 event_date = datetime.date.today() + datetime.timedelta(days=1)
         events = calendar_agent.list_events_for_date(event_date)
         if not events:
@@ -129,6 +129,7 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
         return {"text": text, "attachments": [], "links": []}
 
     elif intent == "create_meeting":
+        # Ожидаются параметры: "contact_name" и "datetime"
         contact_name = parameters.get("contact_name")
         datetime_str = parameters.get("datetime")
         if not contact_name or not datetime_str:
@@ -136,9 +137,17 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
         meeting_datetime = parse_datetime(datetime_str)
         if meeting_datetime is None:
             return "Не удалось распознать дату и время встречи."
-        # Для поиска контактов можно создать локально ContactsAgent (без credentials, если приемлемо)
-        from agents.contacts_agent import ContactsAgent
-        contacts_agent = ContactsAgent()
+        # Если meeting_datetime не имеет timezone, устанавливаем его, используя tz календаря
+        if meeting_datetime.tzinfo is None:
+            meeting_datetime = meeting_datetime.replace(tzinfo=calendar_agent.tz)
+        # Получаем текущее время с учетом timezone
+        now = datetime.datetime.now(meeting_datetime.tzinfo)
+        # Если встреча назначена на время, которое уже прошло, сдвигаем её на 7 дней (на следующую неделю)
+        if meeting_datetime <= now:
+            meeting_datetime += datetime.timedelta(days=7)
+
+        # Используем агента контактов с авторизацией
+        contacts_agent = ContactsAgent(credentials_info=creds)
         contacts = contacts_agent.search_contacts(name=contact_name)
         if not contacts:
             return f"Контакт с именем '{contact_name}' не найден."
@@ -156,12 +165,20 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
                 return "Неверный формат номера контакта."
         else:
             if len(contacts_with_email) > 1:
-                response = "Найдено несколько контактов с указанным именем:\n"
+                lines = []
                 for i, contact in enumerate(contacts_with_email, start=1):
                     email = contact.get("emails")[0] if contact.get("emails") else "без почты"
-                    response += f"{i}. {contact.get('name')} ({email})\n"
-                response += "Укажите номер нужного контакта, добавив параметр 'selected_contact_index'."
-                return response
+                    lines.append(f"{i}. {contact.get('name')} ({email})")
+                response = "Найдено несколько контактов с указанным именем:\n" + "\n".join(lines)
+                response += "\nУкажите номер нужного контакта, добавив параметр 'selected_contact_index'."
+                return {
+                    "action": "multiple_contacts_meeting",
+                    "text": response,
+                    "contacts": contacts_with_email,
+                    "meeting_datetime": meeting_datetime.isoformat(),
+                    "contact_name": contact_name,
+                    "intent": intent
+                }
             else:
                 chosen_contact = contacts_with_email[0]
         guest_email = chosen_contact.get("emails")[0]
@@ -174,8 +191,7 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
         contact_name = parameters.get("contact_name")
         if not contact_name:
             return "Для отмены встречи укажите имя контакта."
-        from agents.contacts_agent import ContactsAgent
-        contacts_agent = ContactsAgent()
+        contacts_agent = ContactsAgent(credentials_info=creds)
         contacts = contacts_agent.search_contacts(name=contact_name)
         if not contacts:
             return f"Контакт с именем '{contact_name}' не найден."

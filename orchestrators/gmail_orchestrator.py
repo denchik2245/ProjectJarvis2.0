@@ -16,6 +16,8 @@ def handle_gmail_intent(intent, parameters, telegram_user_id):
         message_content = parameters.get("message_content", "")
         scheduled_day = parameters.get("scheduled_day")
         subject = parameters.get("subject", "Письмо от вашего ассистента")
+
+        # Если адрес получателя явно указан
         if to_address:
             if scheduled_day:
                 gmail_agent.schedule_email(to_address, subject, message_content, scheduled_day)
@@ -23,6 +25,8 @@ def handle_gmail_intent(intent, parameters, telegram_user_id):
             else:
                 gmail_agent.send_email(to_address, subject, message_content)
                 return f"Письмо отправлено на электронную почту: {to_address}"
+
+        # Если адрес получателя НЕ указан, пытаемся взять его из контактов
         else:
             name = parameters.get("contact_name")
             company = parameters.get("company")
@@ -30,6 +34,7 @@ def handle_gmail_intent(intent, parameters, telegram_user_id):
             if not contacts:
                 return "Контакт не найден."
             elif len(contacts) == 1:
+                # Единственный контакт
                 contact = contacts[0]
                 if contact.get("emails"):
                     email_addr = contact["emails"][0]
@@ -42,6 +47,7 @@ def handle_gmail_intent(intent, parameters, telegram_user_id):
                 else:
                     return f"У контакта {contact['name']} не указан email."
             else:
+                # === МНОЖЕСТВЕННЫЕ КОНТАКТЫ ===
                 lines = []
                 for idx, contact in enumerate(contacts, start=1):
                     line = f"{idx}. {contact['name']}"
@@ -50,8 +56,20 @@ def handle_gmail_intent(intent, parameters, telegram_user_id):
                     else:
                         line += " (Email не указан)"
                     lines.append(line)
-                return "Найдено несколько контактов:\n" + "\n".join(
-                    lines) + "\nПожалуйста, уточните номер нужного контакта."
+
+                # Возвращаем специальную структуру — бот поймает это и попросит пользователя уточнить, какой контакт
+                return {
+                    "action": "multiple_contacts",
+                    "text": (
+                            "Найдено несколько контактов:\n"
+                            + "\n".join(lines)
+                            + "\nПожалуйста, укажите номер нужного контакта."
+                    ),
+                    "contacts": contacts,
+                    "message_content": message_content,
+                    "subject": subject,
+                    "scheduled_day": scheduled_day
+                }
 
     elif intent == "show_messages":
         name = parameters.get("contact_name")

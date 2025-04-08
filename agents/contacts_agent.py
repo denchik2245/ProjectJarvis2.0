@@ -1,3 +1,11 @@
+import inspect
+
+def my_getargspec(func):
+    spec = inspect.getfullargspec(func)
+    return (spec.args, spec.varargs, spec.varkw, spec.defaults)
+# Подменяем getargspec на нашу обёртку
+inspect.getargspec = my_getargspec
+
 import re
 import pymorphy2
 from googleapiclient.discovery import build

@@ -88,7 +88,7 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   "intent": "send_email",
   "parameters": {
     "contact_name": "Антон",
-    "company": "ЧелГУ",
+    "company": "Челгу",
     "message_content": "все будет сделано завтра вечером"
   }
 }
@@ -165,7 +165,7 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   }
 }
 
-[16] Пользователь: "Какая сегодня погода в Москве?"
+[16] Пользователь: "Какая сегодня погода в Москве?"  
 Ответ:
 {
   "intent": "current_weather",
@@ -174,7 +174,7 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   }
 }
 
-[17] Пользователь: "Что у меня запланировано на завтра?"
+[17] Пользователь: "Что у меня запланировано на завтра?"  
 Ответ:
 {
   "intent": "list_events_date",
@@ -183,7 +183,7 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   }
 }
 
-[18] Пользователь: "Добавь в календарь тренировку на 5 апреля в 18:00 и напомни за 30 минут"
+[18] Пользователь: "Добавь в календарь тренировку на 5 апреля в 18:00 и напомни за 30 минут"  
 Ответ:
 {
   "intent": "create_event",
@@ -195,5 +195,13 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   }
 }
 
-Пожалуйста, выдай ответ строго в формате JSON без каких-либо пояснений.
+[19] Пользователь: "Добавь встречу с Антоном завтра в 15:00"  
+Ответ:
+{
+  "intent": "create_meeting",
+  "parameters": {
+    "contact_name": "Антон",
+    "datetime": "завтра в 15:00"
+  }
+}
 """

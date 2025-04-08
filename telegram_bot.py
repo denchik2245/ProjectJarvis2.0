@@ -3,17 +3,15 @@ import logging
 import os
 import re
 import uuid
-
+import datetime
 from telegram import ReplyKeyboardMarkup, KeyboardButton, InputFile
 from telegram.ext import Updater, MessageHandler, Filters, CommandHandler
-
-from llm.normalize_russian_text import normalize_russian_text
-from stt.whisper_stt import WhisperSTT
 from llm.local_llm import LocalLLM
-from orchestrator import handle_intent  # Главный диспетчер, импортированный из orchestrator.py
+from orchestrator import handle_intent  # Основной диспетчер для email и календаря
 from config import TELEGRAM_BOT_TOKEN, AUTH_SERVER_BASE_URL
 from google_auth_manager import get_user_google_credentials
 from agents.gmail_agent import GmailAgent
+from agents.calendar_agent import CalendarAgent
 
 logging.basicConfig(level=logging.INFO)
 
@@ -56,13 +54,20 @@ HELP_TEXT = (
     "Отправьте /help или нажмите кнопку 'Помощь' для повторного вывода справки."
 )
 
+# Глобальное «хранилище» незавершённых запросов на отправку писем,
+# когда нужно уточнить у пользователя, какой именно контакт он имел в виду.
+pending_email_requests = {}
+pending_meeting_requests = {}
+
 def start_handler(update, context):
     reply_keyboard = [[KeyboardButton("Помощь"), KeyboardButton("Авторизация")]]
     markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=False)
     update.message.reply_text(START_TEXT, reply_markup=markup)
 
+
 def help_handler(update, context):
     update.message.reply_text(HELP_TEXT)
+
 
 def auth_handler(update, context):
     user_id = update.message.from_user.id
@@ -71,34 +76,134 @@ def auth_handler(update, context):
         "Для привязки учётной записи Google скопируйте и откройте эту ссылку в браузере:\n" + auth_link
     )
 
-def process_command(update, context, command_text):
-    text_lower = command_text.strip().lower()
-    if text_lower == "помощь":
-        help_handler(update, context)
-        return
-    if text_lower == "авторизация":
-        auth_handler(update, context)
-        return
 
+def process_command(update, context, command_text):
+    telegram_user_id = update.message.from_user.id
+
+    # 1) Проверяем наличие незавершённого запроса по отправке письма
+    if telegram_user_id in pending_email_requests:
+        user_input = command_text.strip()
+        try:
+            selected_index = int(user_input)
+        except ValueError:
+            selected_index = None
+
+        if selected_index is not None:
+            data = pending_email_requests[telegram_user_id]
+            contacts = data["contacts"]
+            if 1 <= selected_index <= len(contacts):
+                chosen_contact = contacts[selected_index - 1]
+                if not chosen_contact.get("emails"):
+                    update.message.reply_text(
+                        f"У контакта {chosen_contact['name']} нет электронной почты."
+                    )
+                    del pending_email_requests[telegram_user_id]
+                    return
+                email_addr = chosen_contact["emails"][0]
+                creds = get_user_google_credentials(str(telegram_user_id))
+                if not creds:
+                    update.message.reply_text("Для отправки письма необходимо авторизоваться через Google.")
+                    del pending_email_requests[telegram_user_id]
+                    return
+                gmail_agent = GmailAgent(credentials_info=creds)
+                if data["scheduled_day"]:
+                    gmail_agent.schedule_email(
+                        email_addr,
+                        data["subject"],
+                        data["message_content"],
+                        data["scheduled_day"]
+                    )
+                    update.message.reply_text(
+                        f"Письмо запланировано для отправки на электронную почту: {email_addr}"
+                    )
+                else:
+                    gmail_agent.send_email(
+                        email_addr,
+                        data["subject"],
+                        data["message_content"]
+                    )
+                    update.message.reply_text(
+                        f"Письмо отправлено на электронную почту: {email_addr}"
+                    )
+                del pending_email_requests[telegram_user_id]
+                return
+            else:
+                update.message.reply_text("Некорректный номер контакта. Попробуйте ещё раз.")
+                return
+
+    # 2) Проверяем наличие незавершённого запроса для создания встречи
+    if telegram_user_id in pending_meeting_requests:
+        user_input = command_text.strip()
+        try:
+            selected_index = int(user_input)
+        except ValueError:
+            selected_index = None
+        if selected_index is not None:
+            data = pending_meeting_requests[telegram_user_id]
+            contacts = data["contacts"]
+            if 1 <= selected_index <= len(contacts):
+                chosen_contact = contacts[selected_index - 1]
+                if not chosen_contact.get("emails"):
+                    update.message.reply_text(f"У контакта {chosen_contact['name']} нет электронной почты.")
+                    del pending_meeting_requests[telegram_user_id]
+                    return
+                guest_email = chosen_contact["emails"][0]
+                # Восстанавливаем дату встречи из ISO-строки
+                meeting_datetime = datetime.datetime.fromisoformat(data["meeting_datetime"])
+                creds = get_user_google_credentials(str(telegram_user_id))
+                if not creds:
+                    update.message.reply_text("Для создания встречи необходимо авторизоваться через Google.")
+                    del pending_meeting_requests[telegram_user_id]
+                    return
+                calendar_agent = CalendarAgent(credentials_info=creds)
+                title = f"Встреча с {chosen_contact.get('name')}"
+                event = calendar_agent.create_event(title, meeting_datetime, attendees=[guest_email])
+                link = event.get('htmlLink', 'ссылка не доступна')
+                update.message.reply_text(f"Встреча создана: {link}")
+                del pending_meeting_requests[telegram_user_id]
+                return
+            else:
+                update.message.reply_text("Некорректный номер контакта. Попробуйте ещё раз.")
+                return
+
+    # 3) Если нет ожидающих выборов, обрабатываем команду через LLM
     llm = LocalLLM()
     parse_result = llm.analyze_request(command_text)
     intent = parse_result.get("intent", "unknown")
     parameters = parse_result.get("parameters", {})
 
-    telegram_user_id = update.message.from_user.id
     result = handle_intent(intent, parameters, telegram_user_id=telegram_user_id)
 
-    # Если результат – словарь с ключами text, attachments, links
     if isinstance(result, dict):
+        # Если получена структура с действием выбора контакта для письма
+        if result.get("action") == "multiple_contacts":
+            pending_email_requests[telegram_user_id] = {
+                "contacts": result["contacts"],
+                "message_content": result["message_content"],
+                "subject": result["subject"],
+                "scheduled_day": result["scheduled_day"]
+            }
+            update.message.reply_text(result["text"])
+            return
+        # Если получена структура с действием выбора контакта для встречи
+        if result.get("action") == "multiple_contacts_meeting":
+            pending_meeting_requests[telegram_user_id] = {
+                "contacts": result["contacts"],
+                "meeting_datetime": result["meeting_datetime"],
+                "contact_name": result["contact_name"]
+            }
+            update.message.reply_text(result["text"])
+            return
+
+        # Остальная обработка (например, для email-вложений)
         text = result.get("text", "")
         attachments = result.get("attachments", [])
         links = result.get("links", [])
+
         if text:
             update.message.reply_text(text)
 
         if attachments:
-            # Если intent относится к Gmail (например, list_starred, list_unread),
-            # используем GmailAgent для скачивания вложений
             creds = get_user_google_credentials(str(telegram_user_id))
             if creds:
                 try:
@@ -110,43 +215,33 @@ def process_command(update, context, command_text):
                 gmail_agent = None
 
             for message_id, attachment_id, file_name in attachments:
-                # Генерируем «безопасное» имя файла
-                sanitized_name = re.sub(r'[^\w\s\.-]', '_', file_name)
-                unique_id = uuid.uuid4().hex
-                # Это базовое имя, под которым хотим сохранить файл
-                # (можно без префикса "temp_", если не нужно)
-                local_filename = f"temp_{unique_id}_{sanitized_name}"
-
-                # Пытаемся скачать вложение
                 try:
-                    # Метод возвращает полный путь к сохранённому файлу
+                    sanitized_name = re.sub(r'[^\w\s\.-]', '_', file_name)
+                    unique_id = uuid.uuid4().hex
+                    local_filename = f"temp_{unique_id}_{sanitized_name}"
                     downloaded_path = gmail_agent.download_attachment(
                         message_id=message_id,
                         attachment_id=attachment_id,
                         filename=local_filename,
-                        save_dir="."  # Сохраняем в текущую директорию
+                        save_dir="."  # сохраняем в текущую папку
                     )
-                    # Если вернулся пустой путь или файла нет – выводим ошибку
                     if not downloaded_path or not os.path.exists(downloaded_path):
                         logging.error(f"Файл так и не создался: {downloaded_path or local_filename}")
                         continue
-
                 except Exception as e:
                     logging.error(f"Ошибка скачивания файла {file_name}: {e}")
                     continue
 
-                # Пытаемся отправить файл в чат
                 try:
                     with open(downloaded_path, "rb") as f:
                         context.bot.send_document(
                             chat_id=update.message.chat_id,
                             document=f,
-                            filename=file_name  # Чтобы пользователь видел оригинальное имя в Telegram
+                            filename=file_name
                         )
                 except Exception as e:
                     logging.error(f"Ошибка отправки файла {file_name}: {e}")
                 finally:
-                    # Удаляем временный файл
                     if downloaded_path and os.path.exists(downloaded_path):
                         os.remove(downloaded_path)
 
@@ -156,38 +251,53 @@ def process_command(update, context, command_text):
 
         if not text and not attachments and not links:
             update.message.reply_text("Нет данных для отображения.")
+
     else:
         response = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2)
         update.message.reply_text(response)
 
+
 def voice_message_handler(update, context):
+    # Пример обработки голосовых сообщений
     file_id = update.message.voice.file_id
     new_file = context.bot.get_file(file_id)
     voice_file_path = "temp_voice.ogg"
     new_file.download(voice_file_path)
+    from stt.whisper_stt import WhisperSTT
+    from llm.normalize_russian_text import normalize_russian_text
+
     stt = WhisperSTT(model_name="large")
     recognized_text = stt.transcribe_audio(voice_file_path)
     normalized_text = normalize_russian_text(recognized_text)
     os.remove(voice_file_path)
+
     update.message.reply_text(f"Распознанный текст: {recognized_text}")
     process_command(update, context, normalized_text)
+
 
 def text_message_handler(update, context):
     user_text = update.message.text
     process_command(update, context, user_text)
+
 
 def run_bot():
     updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start_handler))
     dp.add_handler(CommandHandler("help", help_handler))
-    dp.add_handler(MessageHandler(Filters.regex(r"^(Помощь|Авторизация)$"),
-                                  lambda u, c: auth_handler(u, c) if u.message.text == "Авторизация" else help_handler(u, c)))
+    dp.add_handler(
+        MessageHandler(
+            Filters.regex(r"^(Помощь|Авторизация)$"),
+            lambda u, c: auth_handler(u, c) if u.message.text == "Авторизация" else help_handler(u, c)
+        )
+    )
     dp.add_handler(MessageHandler(Filters.voice, voice_message_handler))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_message_handler))
+
     updater.start_polling()
     logging.info("Бот запущен. Ожидаю сообщения...")
     updater.idle()
+
 
 if __name__ == "__main__":
     run_bot()
