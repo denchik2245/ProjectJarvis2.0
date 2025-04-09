@@ -61,7 +61,7 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   }
 }
 
-[5] Пользователь: "Добавь контакт Глеб из ЧелГУ +79126973674"  
+[5] Пользователь: "Добавь контакт Глеб из ЧелГУ, номер телефона 79126973674"  
 Ответ:
 {
   "intent": "add_contact",
@@ -212,6 +212,17 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   "parameters": {
     "contact_name": "Иван",
     "new_time": "16:00"
+  }
+}
+
+[21] Пользователь: "Тренировка на завтра 18.00"  
+Ответ:
+{
+  "intent": "create_event",
+  "parameters": {
+    "title": "Тренировка",
+    "date": "завтра",
+    "time": "18:00",
   }
 }
 
