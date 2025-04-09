@@ -6,8 +6,12 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from config import GOOGLE_CREDENTIALS_PATH
 
 class DriveAgent:
-    def __init__(self):
-        creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH)
+    def __init__(self, credentials_info=None):
+        if credentials_info is not None:
+            creds = Credentials.from_authorized_user_info(credentials_info)
+        else:
+            creds = Credentials.from_authorized_user_file(GOOGLE_CREDENTIALS_PATH)
+
         self.service = build('drive', 'v3', credentials=creds)
 
     def _get_or_create_folder(self, folder_name: str) -> str:

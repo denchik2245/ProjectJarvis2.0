@@ -137,12 +137,11 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
         meeting_datetime = parse_datetime(datetime_str)
         if meeting_datetime is None:
             return "Не удалось распознать дату и время встречи."
-        # Если meeting_datetime не имеет timezone, устанавливаем его, используя tz календаря
+        # Если meeting_datetime не имеет timezone, устанавливаем его по tz календаря
         if meeting_datetime.tzinfo is None:
             meeting_datetime = meeting_datetime.replace(tzinfo=calendar_agent.tz)
-        # Получаем текущее время с учетом timezone
         now = datetime.datetime.now(meeting_datetime.tzinfo)
-        # Если встреча назначена на время, которое уже прошло, сдвигаем её на 7 дней (на следующую неделю)
+        # Если указанное время уже прошло, сдвигаем событие на 7 дней (то есть на следующую неделю)
         if meeting_datetime <= now:
             meeting_datetime += datetime.timedelta(days=7)
 
@@ -170,7 +169,7 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
                     email = contact.get("emails")[0] if contact.get("emails") else "без почты"
                     lines.append(f"{i}. {contact.get('name')} ({email})")
                 response = "Найдено несколько контактов с указанным именем:\n" + "\n".join(lines)
-                response += "\nУкажите номер нужного контакта, добавив параметр 'selected_contact_index'."
+                response += "\nУкажите номер нужного контакта"
                 return {
                     "action": "multiple_contacts_meeting",
                     "text": response,
@@ -186,6 +185,82 @@ def handle_calendar_intent(intent, parameters, telegram_user_id):
         event = calendar_agent.create_event(title, meeting_datetime, attendees=[guest_email])
         link = event.get('htmlLink', 'ссылка не доступна')
         return f"Встреча создана: {link}"
+
+
+    elif intent == "reschedule_meeting":
+
+        contact_name = parameters.get("contact_name")
+        new_time_str = parameters.get("new_time")
+
+        if not contact_name or not new_time_str:
+            return "Для переноса встречи укажите имя контакта и новое время (например, '16:00')."
+
+        upcoming_events = calendar_agent.list_upcoming_events()
+
+        # Вместо now = datetime.datetime.utcnow() делаем now с учётом таймзоны календаря:
+        now = datetime.datetime.now(calendar_agent.tz)
+        matching_events = []
+        for event in upcoming_events:
+            summary = event.get("summary", "")
+            if contact_name.lower() in summary.lower():
+                event_start_str = event.get("start", {}).get("dateTime")
+                if not event_start_str:
+                    continue
+                try:
+                    event_start = datetime.datetime.fromisoformat(event_start_str)
+                    # Если event_start не содержит tzinfo, добавим ту же зону, что и в календаре
+                    if event_start.tzinfo is None:
+                        event_start = event_start.replace(tzinfo=calendar_agent.tz)
+                except Exception:
+                    continue
+                if event_start >= now:
+                    matching_events.append((event_start, event))
+
+        if not matching_events:
+            return f"Не найдено предстоящих встреч с '{contact_name}'."
+
+        matching_events.sort(key=lambda x: x[0])
+        event_to_update = matching_events[0][1]
+
+        # Парсим новое время (ожидается формат "HH:MM")
+        try:
+            new_hour, new_minute = map(int, new_time_str.split(":"))
+        except Exception:
+            return "Неверный формат нового времени. Используйте формат 'HH:MM'."
+        # Получаем оригинальное время встречи
+        original_start_str = event_to_update.get("start", {}).get("dateTime")
+        original_end_str = event_to_update.get("end", {}).get("dateTime")
+        if not original_start_str or not original_end_str:
+            return "Невозможно получить время исходной встречи."
+        try:
+            original_start = datetime.datetime.fromisoformat(original_start_str)
+            original_end = datetime.datetime.fromisoformat(original_end_str)
+        except Exception:
+            return "Ошибка в формате времени исходной встречи."
+        duration = original_end - original_start
+        # Новое время старта: та же дата, но с новым временем
+        new_start = original_start.replace(hour=new_hour, minute=new_minute, second=original_start.second, microsecond=original_start.microsecond)
+        new_end = new_start + duration
+        updated_event = {
+            "start": {
+                "dateTime": new_start.isoformat(),
+                "timeZone": event_to_update.get("start", {}).get("timeZone", calendar_agent.tz.key)
+            },
+            "end": {
+                "dateTime": new_end.isoformat(),
+                "timeZone": event_to_update.get("end", {}).get("timeZone", calendar_agent.tz.key)
+            }
+        }
+        try:
+            event_id = event_to_update.get("id")
+            patched_event = calendar_agent.service.events().patch(
+                calendarId=calendar_agent.calendar_id,
+                eventId=event_id,
+                body=updated_event
+            ).execute()
+        except Exception as e:
+            return f"Ошибка при переносе встречи: {e}"
+        return f"Встреча '{patched_event.get('summary', '')}' перенесена на {new_start.strftime('%d.%m.%Y %H:%M')}."
 
     elif intent == "cancel_meeting":
         contact_name = parameters.get("contact_name")

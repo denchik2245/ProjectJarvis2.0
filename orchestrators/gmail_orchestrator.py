@@ -47,17 +47,12 @@ def handle_gmail_intent(intent, parameters, telegram_user_id):
                 else:
                     return f"У контакта {contact['name']} не указан email."
             else:
-                # === МНОЖЕСТВЕННЫЕ КОНТАКТЫ ===
+                # Фильтруем контакты – оставляем только те, у которых есть email
+                contacts_with_email = [c for c in contacts if c.get("emails")]
                 lines = []
-                for idx, contact in enumerate(contacts, start=1):
-                    line = f"{idx}. {contact['name']}"
-                    if contact.get("emails"):
-                        line += f" (Email: {', '.join(contact['emails'])})"
-                    else:
-                        line += " (Email не указан)"
+                for idx, contact in enumerate(contacts_with_email, start=1):
+                    line = f"{idx}. {contact['name']} (Email: {', '.join(contact['emails'])})"
                     lines.append(line)
-
-                # Возвращаем специальную структуру — бот поймает это и попросит пользователя уточнить, какой контакт
                 return {
                     "action": "multiple_contacts",
                     "text": (
@@ -65,7 +60,7 @@ def handle_gmail_intent(intent, parameters, telegram_user_id):
                             + "\n".join(lines)
                             + "\nПожалуйста, укажите номер нужного контакта."
                     ),
-                    "contacts": contacts,
+                    "contacts": contacts_with_email,
                     "message_content": message_content,
                     "subject": subject,
                     "scheduled_day": scheduled_day

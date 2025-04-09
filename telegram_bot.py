@@ -78,10 +78,13 @@ def auth_handler(update, context):
 
 
 def process_command(update, context, command_text):
-    telegram_user_id = update.message.from_user.id
+    # Приводим идентификатор пользователя к строке для единообразия
+    user_key = str(update.message.from_user.id)
 
     # 1) Проверяем наличие незавершённого запроса по отправке письма
-    if telegram_user_id in pending_email_requests:
+    if user_key in pending_email_requests:
+        logging.info(
+            f"Найдены pending_email_requests для пользователя {user_key}: {pending_email_requests[user_key]}")
         user_input = command_text.strip()
         try:
             selected_index = int(user_input)
@@ -89,78 +92,72 @@ def process_command(update, context, command_text):
             selected_index = None
 
         if selected_index is not None:
-            data = pending_email_requests[telegram_user_id]
+            data = pending_email_requests[user_key]
             contacts = data["contacts"]
             if 1 <= selected_index <= len(contacts):
                 chosen_contact = contacts[selected_index - 1]
                 if not chosen_contact.get("emails"):
-                    update.message.reply_text(
-                        f"У контакта {chosen_contact['name']} нет электронной почты."
-                    )
-                    del pending_email_requests[telegram_user_id]
+                    update.message.reply_text(f"У контакта {chosen_contact['name']} нет электронной почты.")
+                    del pending_email_requests[user_key]
                     return
                 email_addr = chosen_contact["emails"][0]
-                creds = get_user_google_credentials(str(telegram_user_id))
+                creds = get_user_google_credentials(user_key)
                 if not creds:
                     update.message.reply_text("Для отправки письма необходимо авторизоваться через Google.")
-                    del pending_email_requests[telegram_user_id]
+                    del pending_email_requests[user_key]
                     return
                 gmail_agent = GmailAgent(credentials_info=creds)
-                if data["scheduled_day"]:
+                if data.get("scheduled_day"):
                     gmail_agent.schedule_email(
                         email_addr,
                         data["subject"],
                         data["message_content"],
                         data["scheduled_day"]
                     )
-                    update.message.reply_text(
-                        f"Письмо запланировано для отправки на электронную почту: {email_addr}"
-                    )
+                    update.message.reply_text(f"Письмо запланировано для отправки на электронную почту: {email_addr}")
                 else:
                     gmail_agent.send_email(
                         email_addr,
                         data["subject"],
                         data["message_content"]
                     )
-                    update.message.reply_text(
-                        f"Письмо отправлено на электронную почту: {email_addr}"
-                    )
-                del pending_email_requests[telegram_user_id]
+                    update.message.reply_text(f"Письмо отправлено на электронную почту: {email_addr}")
+                del pending_email_requests[user_key]
                 return
             else:
                 update.message.reply_text("Некорректный номер контакта. Попробуйте ещё раз.")
                 return
 
     # 2) Проверяем наличие незавершённого запроса для создания встречи
-    if telegram_user_id in pending_meeting_requests:
+    if user_key in pending_meeting_requests:
         user_input = command_text.strip()
         try:
             selected_index = int(user_input)
         except ValueError:
             selected_index = None
         if selected_index is not None:
-            data = pending_meeting_requests[telegram_user_id]
+            data = pending_meeting_requests[user_key]
             contacts = data["contacts"]
             if 1 <= selected_index <= len(contacts):
                 chosen_contact = contacts[selected_index - 1]
                 if not chosen_contact.get("emails"):
                     update.message.reply_text(f"У контакта {chosen_contact['name']} нет электронной почты.")
-                    del pending_meeting_requests[telegram_user_id]
+                    del pending_meeting_requests[user_key]
                     return
                 guest_email = chosen_contact["emails"][0]
                 # Восстанавливаем дату встречи из ISO-строки
                 meeting_datetime = datetime.datetime.fromisoformat(data["meeting_datetime"])
-                creds = get_user_google_credentials(str(telegram_user_id))
+                creds = get_user_google_credentials(user_key)
                 if not creds:
                     update.message.reply_text("Для создания встречи необходимо авторизоваться через Google.")
-                    del pending_meeting_requests[telegram_user_id]
+                    del pending_meeting_requests[user_key]
                     return
                 calendar_agent = CalendarAgent(credentials_info=creds)
                 title = f"Встреча с {chosen_contact.get('name')}"
                 event = calendar_agent.create_event(title, meeting_datetime, attendees=[guest_email])
                 link = event.get('htmlLink', 'ссылка не доступна')
                 update.message.reply_text(f"Встреча создана: {link}")
-                del pending_meeting_requests[telegram_user_id]
+                del pending_meeting_requests[user_key]
                 return
             else:
                 update.message.reply_text("Некорректный номер контакта. Попробуйте ещё раз.")
@@ -169,15 +166,16 @@ def process_command(update, context, command_text):
     # 3) Если нет ожидающих выборов, обрабатываем команду через LLM
     llm = LocalLLM()
     parse_result = llm.analyze_request(command_text)
+    logging.info(f"LLM parse_result: {parse_result}")
     intent = parse_result.get("intent", "unknown")
     parameters = parse_result.get("parameters", {})
 
-    result = handle_intent(intent, parameters, telegram_user_id=telegram_user_id)
+    result = handle_intent(intent, parameters, telegram_user_id=user_key)
 
     if isinstance(result, dict):
-        # Если получена структура с действием выбора контакта для письма
+        # Обработка случаев multiple_contacts / multiple_contacts_meeting
         if result.get("action") == "multiple_contacts":
-            pending_email_requests[telegram_user_id] = {
+            pending_email_requests[user_key] = {
                 "contacts": result["contacts"],
                 "message_content": result["message_content"],
                 "subject": result["subject"],
@@ -185,9 +183,8 @@ def process_command(update, context, command_text):
             }
             update.message.reply_text(result["text"])
             return
-        # Если получена структура с действием выбора контакта для встречи
         if result.get("action") == "multiple_contacts_meeting":
-            pending_meeting_requests[telegram_user_id] = {
+            pending_meeting_requests[user_key] = {
                 "contacts": result["contacts"],
                 "meeting_datetime": result["meeting_datetime"],
                 "contact_name": result["contact_name"]
@@ -203,47 +200,85 @@ def process_command(update, context, command_text):
         if text:
             update.message.reply_text(text)
 
+        # === Разделяем логику обработки attachments ===
         if attachments:
-            creds = get_user_google_credentials(str(telegram_user_id))
-            if creds:
-                try:
-                    gmail_agent = GmailAgent(credentials_info=creds)
-                except Exception as e:
-                    logging.error(f"Ошибка создания GmailAgent: {e}")
-                    gmail_agent = None
-            else:
-                gmail_agent = None
-
-            for message_id, attachment_id, file_name in attachments:
-                try:
-                    sanitized_name = re.sub(r'[^\w\s\.-]', '_', file_name)
-                    unique_id = uuid.uuid4().hex
-                    local_filename = f"temp_{unique_id}_{sanitized_name}"
-                    downloaded_path = gmail_agent.download_attachment(
-                        message_id=message_id,
-                        attachment_id=attachment_id,
-                        filename=local_filename,
-                        save_dir="."  # сохраняем в текущую папку
-                    )
-                    if not downloaded_path or not os.path.exists(downloaded_path):
-                        logging.error(f"Файл так и не создался: {downloaded_path or local_filename}")
+            # Если это Drive-интент (show_photos / show_files), возвращаются кортежи (file_id, file_name)
+            if intent in ["show_photos", "show_files"]:
+                from agents.drive_agent import DriveAgent
+                creds = get_user_google_credentials(user_key)
+                drive_agent = DriveAgent(credentials_info=creds)
+                for file_id, file_name in attachments:
+                    try:
+                        sanitized_name = re.sub(r'[^\w\s\.-]', '_', file_name)
+                        unique_id = uuid.uuid4().hex
+                        local_filename = f"temp_{unique_id}_{sanitized_name}"
+                        drive_agent.download_file(file_id, local_filename)
+                    except Exception as e:
+                        logging.error(f"Ошибка скачивания файла {file_name}: {e}")
                         continue
-                except Exception as e:
-                    logging.error(f"Ошибка скачивания файла {file_name}: {e}")
-                    continue
 
-                try:
-                    with open(downloaded_path, "rb") as f:
-                        context.bot.send_document(
-                            chat_id=update.message.chat_id,
-                            document=f,
-                            filename=file_name
-                        )
-                except Exception as e:
-                    logging.error(f"Ошибка отправки файла {file_name}: {e}")
-                finally:
-                    if downloaded_path and os.path.exists(downloaded_path):
-                        os.remove(downloaded_path)
+                    try:
+                        ext = os.path.splitext(file_name)[1].lower()
+                        with open(local_filename, "rb") as f:
+                            if ext in [".jpg", ".jpeg", ".png"]:
+                                context.bot.send_photo(
+                                    chat_id=update.message.chat_id,
+                                    photo=InputFile(f, filename=file_name)
+                                )
+                            else:
+                                context.bot.send_document(
+                                    chat_id=update.message.chat_id,
+                                    document=InputFile(f, filename=file_name)
+                                )
+                    except Exception as e:
+                        logging.error(f"Ошибка отправки файла {file_name}: {e}")
+                    finally:
+                        if os.path.exists(local_filename):
+                            os.remove(local_filename)
+            # Если это Gmail-интент (list_starred, list_unread, etc.), у нас (message_id, attachment_id, file_name)
+            elif intent in ["list_starred", "list_unread"]:
+                creds = get_user_google_credentials(user_key)
+                if creds:
+                    try:
+                        gmail_agent = GmailAgent(credentials_info=creds)
+                    except Exception as e:
+                        logging.error(f"Ошибка создания GmailAgent: {e}")
+                        gmail_agent = None
+                else:
+                    gmail_agent = None
+
+                if gmail_agent:
+                    for message_id, attachment_id, file_name in attachments:
+                        try:
+                            sanitized_name = re.sub(r'[^\w\s\.-]', '_', file_name)
+                            unique_id = uuid.uuid4().hex
+                            local_filename = f"temp_{unique_id}_{sanitized_name}"
+                            downloaded_path = gmail_agent.download_attachment(
+                                message_id=message_id,
+                                attachment_id=attachment_id,
+                                filename=local_filename,
+                                save_dir="."
+                            )
+                            if not downloaded_path or not os.path.exists(downloaded_path):
+                                logging.error(f"Файл так и не создался: {downloaded_path or local_filename}")
+                                continue
+                        except Exception as e:
+                            logging.error(f"Ошибка скачивания файла {file_name}: {e}")
+                            continue
+
+                        try:
+                            with open(downloaded_path, "rb") as f:
+                                context.bot.send_document(
+                                    chat_id=update.message.chat_id,
+                                    document=InputFile(f, filename=file_name)
+                                )
+                        except Exception as e:
+                            logging.error(f"Ошибка отправки файла {file_name}: {e}")
+                        finally:
+                            if downloaded_path and os.path.exists(downloaded_path):
+                                os.remove(downloaded_path)
+            else:
+                logging.warning(f"Пришли attachments от intent={intent}, но логика не определена.")
 
         if links:
             text_links = "\n".join(links)
@@ -255,7 +290,6 @@ def process_command(update, context, command_text):
     else:
         response = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2)
         update.message.reply_text(response)
-
 
 def voice_message_handler(update, context):
     # Пример обработки голосовых сообщений

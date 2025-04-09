@@ -22,7 +22,7 @@ def handle_intent(intent: str, parameters: dict, telegram_user_id=None):
         return handle_gmail_intent(intent, parameters, telegram_user_id)
     elif intent in ["save_photo", "show_photos", "show_files"]:
         return handle_drive_intent(intent, parameters, telegram_user_id)
-    elif intent in ["create_event", "list_events_date", "list_events_period", "create_meeting", "cancel_meeting"]:
+    elif intent in ["create_event", "list_events_date", "list_events_period", "create_meeting", "cancel_meeting", "reschedule_meeting"]:
         return handle_calendar_intent(intent, parameters, telegram_user_id)
     else:
         return "Извините, я не понял вашу команду или это пока не реализовано."

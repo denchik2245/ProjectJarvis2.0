@@ -3,7 +3,7 @@ FEW_SHOT_EXAMPLES = r"""
 {"intent": "unknown", "parameters": {}}
 
 Допустимые значения "intent":
-search_contact, send_email, search_document, show_messages, clear_mail, list_starred, list_unread, save_photo, show_photos, add_contact, show_files, create_event, list_events_date, list_events_period, create_meeting, cancel_meeting, current_weather, current_temperature, week_forecast, unknown
+search_contact, send_email, search_document, show_messages, clear_mail, list_starred, list_unread, save_photo, show_photos, add_contact, show_files, create_event, list_events_date, list_events_period, create_meeting, cancel_meeting, reschedule_meeting, current_weather, current_temperature, week_forecast, unknown
 
 Правила:
 1. Ответ — корректный JSON.
@@ -139,7 +139,7 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   "parameters": {}
 }
 
-[13] Пользователь: "Выведи все непрочитанные сообщения"  
+[13] Пользователь: "Выведи все непрочитанные сообщения на моей почте"  
 Ответ:
 {
   "intent": "list_unread",
@@ -183,7 +183,7 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
   }
 }
 
-[18] Пользователь: "Добавь в календарь тренировку на 5 апреля в 18:00 и напомни за 30 минут"  
+[18] Пользователь: "Добавь в календарь тренировку на 5 апреля в 18.00 и напомни за 30 минут"  
 Ответ:
 {
   "intent": "create_event",
@@ -204,4 +204,16 @@ search_contact, send_email, search_document, show_messages, clear_mail, list_sta
     "datetime": "завтра в 15:00"
   }
 }
+
+[20] Пользователь: "Перенеси встречу с Иваном на 16:00"  
+Ответ:
+{
+  "intent": "reschedule_meeting",
+  "parameters": {
+    "contact_name": "Иван",
+    "new_time": "16:00"
+  }
+}
+
+Пожалуйста, выдай ответ строго в формате JSON без каких-либо пояснений.
 """
